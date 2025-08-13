@@ -1,0 +1,41 @@
+# Python bytecode et artefacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Environnements virtuels
+.venv/
+venv/
+
+# Variables d'environnement locales
+.env
+.env.*
+
+# Build/packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Caches & outils
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# IDE/éditeur
+.vscode/
+.idea/
+*.code-workspace
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Spécifique au projet
+ytb-to-tiktok/outputs/
+ytb-to-tiktok/cookies.txt
+
