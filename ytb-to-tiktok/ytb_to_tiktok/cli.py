@@ -22,20 +22,34 @@ class DownloadResult:
     title: str
 
 
-def ensure_ffmpeg_in_path() -> None:
+def ensure_ffmpeg_in_path() -> tuple[str, str]:
     """Ensure ffmpeg is available. imageio-ffmpeg provides a binary path we can expose.
 
-    On Windows, we append the binary directory to PATH at runtime if needed.
+    Returns tuple of (ffmpeg_path, ffprobe_path) for direct use in subprocess calls.
     """
     try:
         import imageio_ffmpeg
 
         ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
-        ffmpeg_dir = str(Path(ffmpeg_path).parent)
-        if ffmpeg_dir not in os.environ.get("PATH", ""):
-            os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ.get("PATH", "")
+        ffmpeg_dir = Path(ffmpeg_path).parent
+        
+        # Construire le chemin vers ffprobe (même répertoire que ffmpeg)
+        ffprobe_path = ffmpeg_dir / "ffprobe-win-x86_64-v7.1.exe"
+        if not ffprobe_path.exists():
+            # Essayer d'autres noms possibles
+            for name in ["ffprobe.exe", "ffprobe"]:
+                candidate = ffmpeg_dir / name
+                if candidate.exists():
+                    ffprobe_path = candidate
+                    break
+            else:
+                # Si ffprobe n'est pas trouvé, utiliser ffmpeg avec -i pour obtenir la durée
+                ffprobe_path = None
+        
+        return str(ffmpeg_path), str(ffprobe_path) if ffprobe_path else None
     except Exception as exc:  # pragma: no cover - defensive
         console.print(f"[yellow]Attention:[/] ffmpeg introuvable automatiquement ({exc}). Assurez-vous qu'il est installé et dans PATH.")
+        return "ffmpeg", "ffprobe"  # Fallback aux commandes système
 
 
 def download_youtube(
@@ -90,7 +104,7 @@ def download_youtube(
 
 
 def split_video_ffmpeg(input_path: Path, out_dir: Path, segment_seconds: int = 60, limit: Optional[int] = None) -> list[Path]:
-    ensure_ffmpeg_in_path()
+    ffmpeg_path, ffprobe_path = ensure_ffmpeg_in_path()
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Build segment pattern: basename_0001.mp4
@@ -102,12 +116,12 @@ def split_video_ffmpeg(input_path: Path, out_dir: Path, segment_seconds: int = 6
     if duration is None:
         raise RuntimeError("Impossible d'obtenir la durée de la vidéo (ffprobe)")
 
-    # Si vidéo plus courte que la durée de segment demandée: produire un seul fichier
+    # Si vidéo plus courte que la durée de segment demandée: produire un seul clip
     if duration <= float(segment_seconds):
         console.print("[yellow]La vidéo est plus courte que la durée de segment demandée; un seul clip sera produit.[/]")
         single_out = str(out_dir / f"{base}_0000.mp4")
         cmd_single = [
-            "ffmpeg",
+            ffmpeg_path,
             "-y",
             "-i",
             str(input_path),
@@ -134,7 +148,7 @@ def split_video_ffmpeg(input_path: Path, out_dir: Path, segment_seconds: int = 6
         # Il n'y a qu'un seul segment (>= segment_seconds), copier tel quel
         single_out = str(out_dir / f"{base}_0000.mp4")
         cmd_single = [
-            "ffmpeg",
+            ffmpeg_path,
             "-y",
             "-i",
             str(input_path),
@@ -150,7 +164,7 @@ def split_video_ffmpeg(input_path: Path, out_dir: Path, segment_seconds: int = 6
     # Re-encodage avec -segment_times pour garantir des coupes exactes et dernier segment >= S
     segment_times_arg = ",".join(f"{t:.3f}" for t in cut_times)
     cmd_segment = [
-        "ffmpeg",
+        ffmpeg_path,
         "-y",
         "-i",
         str(input_path),
@@ -183,9 +197,14 @@ def split_video_ffmpeg(input_path: Path, out_dir: Path, segment_seconds: int = 6
 
 
 def probe_duration_seconds(input_path: Path) -> Optional[float]:
-    ensure_ffmpeg_in_path()
+    ffmpeg_path, ffprobe_path = ensure_ffmpeg_in_path()
+    
+    # Si ffprobe n'est pas disponible, utiliser ffmpeg avec -i pour obtenir la durée
+    if ffprobe_path is None:
+        return _get_duration_with_ffmpeg(input_path, ffmpeg_path)
+    
     cmd = [
-        "ffprobe",
+        ffprobe_path,
         "-v",
         "error",
         "-show_entries",
@@ -201,6 +220,33 @@ def probe_duration_seconds(input_path: Path) -> Optional[float]:
         return float(proc.stdout.strip())
     except ValueError:
         return None
+
+
+def _get_duration_with_ffmpeg(input_path: Path, ffmpeg_path: str) -> Optional[float]:
+    """Obtenir la durée d'une vidéo en utilisant ffmpeg -i (fallback si ffprobe n'est pas disponible)."""
+    cmd = [
+        ffmpeg_path,
+        "-i",
+        str(input_path),
+    ]
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if proc.returncode != 0:
+        # ffmpeg -i retourne toujours un code d'erreur, mais la durée est dans stderr
+        stderr_output = proc.stderr
+        
+        # Chercher la ligne "Duration: HH:MM:SS.xx"
+        import re
+        duration_match = re.search(r"Duration: (\d{2}):(\d{2}):(\d{2})\.(\d{2})", stderr_output)
+        if duration_match:
+            hours = int(duration_match.group(1))
+            minutes = int(duration_match.group(2))
+            seconds = int(duration_match.group(3))
+            centiseconds = int(duration_match.group(4))
+            
+            total_seconds = hours * 3600 + minutes * 60 + seconds + centiseconds / 100.0
+            return total_seconds
+    
+    return None
 
 
 def _escape_drawtext_text(text: str) -> str:
@@ -255,7 +301,7 @@ def overlay_text_on_video(
     position: str = "tc",
 ) -> None:
     """Ajoute une surimpression de texte via ffmpeg drawtext."""
-    ensure_ffmpeg_in_path()
+    ffmpeg_path, _ = ensure_ffmpeg_in_path()
 
     text_escaped = _escape_drawtext_text(text)
     fontfile = _find_default_fontfile()
@@ -280,7 +326,7 @@ def overlay_text_on_video(
     filter_arg = "drawtext=" + ":".join(drawtext_kvs)
 
     cmd = [
-        "ffmpeg",
+        ffmpeg_path,
         "-y",
         "-i",
         str(input_path),
@@ -329,7 +375,7 @@ def overlay_label_with_pillow(
     position: str = "tc",
 ) -> None:
     """Rend un label (texte + fond arrondi) avec Pillow et l'overlay sur la vidéo via ffmpeg."""
-    ensure_ffmpeg_in_path()
+    ffmpeg_path, _ = ensure_ffmpeg_in_path()
 
     try:
         from PIL import Image, ImageDraw, ImageFont
@@ -434,7 +480,7 @@ def overlay_label_with_pillow(
     filter_arg = f"overlay=x={x_expr}:y={y_expr}"
 
     cmd = [
-        "ffmpeg",
+        ffmpeg_path,
         "-y",
         "-i",
         str(input_path),

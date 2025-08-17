@@ -43,6 +43,8 @@ Main arguments:
 - --user-agent: custom HTTP User-Agent
 - --proxy: HTTP/HTTPS proxy, e.g. `http://127.0.0.1:8080`
 
+- vidéo exemple = https://www.youtube.com/watch?v=A1MY_8EUois&pp=ygUVd2FyIHRodW5kZXIgc3Bvb2tzdG9u
+
 Examples:
 ```powershell
 # Standard 60s split
